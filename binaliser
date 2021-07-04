@@ -1,10 +1,19 @@
 #!/usr/bin/python3
 
+from elftools.elf.sections import Symbol
 from pwn import *
 import subprocess
 import sys
+from operator import getitem
+from collections import OrderedDict
+
+from pwnlib.asm import _objdump
+
+import pprint
+pp = pprint.PrettyPrinter(indent=4)
 
 CHECK_SEC = 'checksec'
+OBJDUMP = 'objdump'
 
 
 RELRO   = "Full RELRO"
@@ -23,31 +32,107 @@ def print_banner():
     ''')
 
 
-def interpret_results(results):
+def print_results(tactics):
+    pad_base = ' ' * 12
+    pad_inner = ' ' * 14
+    pad_inner_inner = ' ' * 18
+
+    tactics = OrderedDict(sorted(tactics.items(), 
+                    key = lambda x: getitem(x[1], 'weight'), reverse=True))
     
-    metrics = {
-        'rop': [],
-        'bof': [],
-        'fmt': [],
+    # pp.pprint(tactics)
+
+    # print common
+    print(f"{pad_base}[*] General Tactics\n")
+    for strategy in tactics['common']['strategies']:
+        print(f"{pad_inner} ‣ {strategy}")
+
+    # tactics by weight
+    print(f"\n{pad_base}[*] Tactics By Weight\n")
+    rank = 1
+    for tactic in tactics:
+        if tactic == 'common': continue
+        print(f'\n{pad_inner} {rank} :: {tactic}\n')
+        for strategy in tactics[tactic]['strategies']:
+            print(f"{pad_inner_inner} ‣ {strategy}")
+        rank += 1
+
+def interpret_results(results, win):
+    
+    strategies = {
+        'GOT_RW': 'Overwrite GOT Entry',
+        'canary': 'Attempt to leak or bruteforce stack canary',
+        'NX_BOF': 'Attempt return to win function',
+        'shellcode': 'Attempt to execute shellcode in a stack buffer',
+        'leak': 'Attempt to obtain a region leak such as an address on the stack',
+        'win' : 'Attempt return to win function',
+        'return_ptr': 'Linear overwrite of return pointer'
     }
 
-    if (results[1]):
-        pass
-    if (results[2]):
-        pass
-    if (results[3]):
-        pass
-    if (results[4]):
-        pass
-    if (results[5]):
-        pass
+    tactics = {
+        'rop': {
+            'weight': 0,
+            'strategies': []
+        },
+        'bof': {
+            'weight': 0,
+            'strategies': []
+        },
+        'fmt_str': {
+            'weight': 0,
+            'strategies': []
+        },
+        'common': {
+            'weight': 0,
+            'strategies': []
+        }
+    }
 
+    if (win):
+        tactics['common']['strategies'].append(strategies['win'])
 
+    # Memory protections disabled
+    if (RELRO not in results[2]):
+        tactics['fmt_str']['weight'] += 1
+        tactics['fmt_str']['strategies'].append(strategies['GOT_RW'])
+    if (CANARY not in results[3]):
+        tactics['bof']['weight'] += 1
+        tactics['bof']['strategies'].append(strategies['return_ptr'])
+    if (NX not in results[4]):
+        tactics['bof']['weight'] += 1
+        tactics['bof']['strategies'].append(strategies['shellcode'])
+    if (PIE not in results[5]):
+        pass
     
 
+    # Memory protections enabled
+    if (RELRO in results[2]):
+        tactics['fmt_str']['weight'] -= 1
+    if (CANARY in results[3]):
+        tactics['bof']['weight'] += 1
+    if (NX in results[4]):
+        if (win):
+            tactics['bof']['weight'] += 1
+        else:
+            tactics['bof']['weight'] -= 1
+        
+        tactics['rop']['weight'] -= 1
 
+    if (PIE in results[5]):
+        tactics['common']['strategies'].append(strategies['leak'])
+
+    print_results(tactics)
+
+
+
+# TODO :: Fix awful prints with specifiers
 def analyze(target_bin, options=0):
     print_banner()
+
+    elf = ELF(target_bin, checksec=False)
+    # TODO :: mutate win
+    win_function = elf.symbols['win']  
+
     
     print(f'''
         [>>] Analysing {target_bin} 
@@ -59,10 +144,14 @@ def analyze(target_bin, options=0):
     for protection in range(1, 6):
         print(f'        {results[protection]}',end=None)
 
-    print('\n       [>>] Determining possible strategies')
+    if (win_function is not None):
+        print(f'\n            Likely win function @ {hex(win_function)}')
+
+
+    print('\n       [>>] Determining possible strategies\n')
 
     # TODO :: Add more metrics
-    interpret_results(results)
+    interpret_results(results, win_function is not None)
 
 
 if __name__ == '__main__':
