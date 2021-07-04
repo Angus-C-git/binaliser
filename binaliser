@@ -52,7 +52,7 @@ def print_results(tactics):
     rank = 1
     for tactic in tactics:
         if tactic == 'common': continue
-        print(f'\n{pad_inner} {rank} :: {tactic}\n')
+        print(f'\n{pad_inner} [{rank}] :: [{tactic}]\n')
         for strategy in tactics[tactic]['strategies']:
             print(f"{pad_inner_inner} ‣ {strategy}")
         rank += 1
@@ -109,14 +109,15 @@ def interpret_results(results, win):
     if (RELRO in results[2]):
         tactics['fmt_str']['weight'] -= 1
     if (CANARY in results[3]):
-        tactics['bof']['weight'] += 1
+        tactics['bof']['strategies'].append(strategies['canary'])
     if (NX in results[4]):
         if (win):
             tactics['bof']['weight'] += 1
         else:
             tactics['bof']['weight'] -= 1
         
-        tactics['rop']['weight'] -= 1
+        tactics['rop']['weight'] += 1
+        tactics['fmt_str']['weight'] += 1
 
     if (PIE in results[5]):
         tactics['common']['strategies'].append(strategies['leak'])
@@ -131,8 +132,10 @@ def analyze(target_bin, options=0):
 
     elf = ELF(target_bin, checksec=False)
     # TODO :: mutate win
-    win_function = elf.symbols['win']  
-
+    try:
+        win_function = elf.symbols['win']
+    except:
+        win_function = None
     
     print(f'''
         [>>] Analysing {target_bin} 
@@ -152,6 +155,7 @@ def analyze(target_bin, options=0):
 
     # TODO :: Add more metrics
     interpret_results(results, win_function is not None)
+    print('\n')
 
 
 if __name__ == '__main__':
