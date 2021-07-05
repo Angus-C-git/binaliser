@@ -33,6 +33,9 @@ TARGET_BIN = None
 # timeout
 RCV_BEFORE = 25
 
+# UI
+
+PAD_BASE = ' ' * 12
 logging.disable()
 
 
@@ -53,8 +56,6 @@ def print_results(tactics):
 
     tactics = OrderedDict(sorted(tactics.items(), 
                     key = lambda x: getitem(x[1], 'weight'), reverse=True))
-    
-    # pp.pprint(tactics)
 
     # print common
     print(f"{pad_base}[*] General Tactics\n")
@@ -72,40 +73,71 @@ def print_results(tactics):
         rank += 1
 
 
-def fuzz_offsets(fmtstr_mode=0):
-    pad_base = ' ' * 12
-    proc = process(TARGET_BIN)
-    
-    print(f'''
-        [>>] Fuzzing for offsets
-    ''')
-
-    if (fmtstr_mode):
-        pass
-    
-    
-    offset_test = cyclic(1000)
+def fuzz_fmtstr(test_payload):
     try:
+        proc = process(TARGET_BIN)
         # Attempt to catch a simple prompt
         proc.recvlines(RCV_BEFORE, timeout=1.5)
-        proc.sendline(offset_test)
+        proc.sendline(test_payload)
+        return proc.recvall()
 
-        core = Coredump('./core')
-        offset = cyclic_find(core.eip)
-        print(f'{pad_base}Found possible offset @ {hex(offset)}')
-        
-        # cleanup
-        os.remove('./core')
-        proc.close()
     except Exception as e:
         print('''
             Automatically detecting the offset failed
             likely because the input point to the binary
             is not simplistic or vulnerable.
         ''')
-        print(f"{pad_base}ERR :: {e}")
+        print(f"{PAD_BASE}ERR :: {e}")
 
-        exit(0)
+
+def fuzz_offsets(fmtstr_mode=0):
+    pad_base = ' ' * 12
+    
+    print(f'''
+        [>>] Fuzzing for offsets
+    ''')
+
+    # :: Try to find offsets for both bof and fmt ::
+
+    # if (fmtstr_mode):
+    try:
+        fmtstr_fuzz = FmtStr(execute_fmt=fuzz_fmtstr)
+        offset = fmtstr_fuzz.offset
+        print(f'{pad_base}Found possible offset for format str @ {hex(offset)}')
+    except Exception as e:
+        print('''
+            Automatically detecting the offset for a format str 
+            failed likely because the input point to the binary
+            is not simplistic or vulnerable ...
+
+            Note : This is expected if a return pointer offset was found.
+        ''')
+        print(f"{pad_base}ERR :: {e}")
+    
+    offset_test = cyclic(1000)
+    try:
+        proc = process(TARGET_BIN)
+        # Attempt to catch a simple prompt
+        proc.recvlines(RCV_BEFORE, timeout=1.5)
+        proc.sendline(offset_test)
+
+        core = Coredump('./core')
+        offset = cyclic_find(core.eip)
+        print(f'{pad_base}Found possible return pointer offset @ {hex(offset)}')
+        
+        # cleanup
+        # os.remove('./core')
+        proc.close()
+    except Exception as e:
+        print('''
+            Automatically detecting the offset for a BOF failed
+            likely because the input point to the binary
+            is not, simplistic, vulnerable or uses a canary ...
+
+            Note : This is expected if a format string offset was found.
+        ''')
+        print(f"{pad_base}ERR :: {e}, was the core dumped?")
+
 
 
 def interpret_results(results, win, options):

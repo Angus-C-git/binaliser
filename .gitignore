@@ -2,7 +2,7 @@
 .vscode/
 
 # GDB
-core
+# core
 .gdb_history
 
 # Byte-compiled / optimized / DLL files
