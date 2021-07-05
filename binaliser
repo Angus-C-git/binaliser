@@ -4,16 +4,21 @@ from elftools.elf.sections import Symbol
 from pwn import *
 import subprocess
 import sys
+import os
 from operator import getitem
 from collections import OrderedDict
+from pwnlib import timeout
 
 from pwnlib.asm import _objdump
 
 import pprint
+
+from pwnlib.rop import gadgets
+from pwnlib.util.iters import pad
 pp = pprint.PrettyPrinter(indent=4)
 
 CHECK_SEC = 'checksec'
-OBJDUMP = 'objdump'
+ROPPER = 'ropper'
 
 
 RELRO   = "Full RELRO"
@@ -22,7 +27,17 @@ NX      = "NX enabled"
 PIE     = "PIE enabled"
 
 
+TARGET_BIN = None
+
+# Lines to receive before
+# timeout
+RCV_BEFORE = 25
+
+logging.disable()
+
+
 def print_banner():
+
     print('''
           ____  ____ ___ _   _    _    _     ___ ____  _____ ____   ____  
          / / / | __ )_ _| \ | |  / \  | |   |_ _/ ___|| ____|  _ \  \ \ \ 
@@ -30,7 +45,6 @@ def print_banner():
         \ \ \  | |_) | || |\  |/ ___ \| |___ | | ___) | |___|  _ <   / / /
          \_\_\ |____/___|_| \_/_/   \_\_____|___|____/|_____|_| \_\ /_/_/ 
     ''')
-
 
 def print_results(tactics):
     pad_base = ' ' * 12
@@ -57,7 +71,44 @@ def print_results(tactics):
             print(f"{pad_inner_inner} ‣ {strategy}")
         rank += 1
 
-def interpret_results(results, win):
+
+def fuzz_offsets(fmtstr_mode=0):
+    pad_base = ' ' * 12
+    proc = process(TARGET_BIN)
+    
+    print(f'''
+        [>>] Fuzzing for offsets
+    ''')
+
+    if (fmtstr_mode):
+        pass
+    
+    
+    offset_test = cyclic(1000)
+    try:
+        # Attempt to catch a simple prompt
+        proc.recvlines(RCV_BEFORE, timeout=1.5)
+        proc.sendline(offset_test)
+
+        core = Coredump('./core')
+        offset = cyclic_find(core.eip)
+        print(f'{pad_base}Found possible offset @ {hex(offset)}')
+        
+        # cleanup
+        os.remove('./core')
+        proc.close()
+    except Exception as e:
+        print('''
+            Automatically detecting the offset failed
+            likely because the input point to the binary
+            is not simplistic or vulnerable.
+        ''')
+        print(f"{pad_base}ERR :: {e}")
+
+        exit(0)
+
+
+def interpret_results(results, win, options):
     
     strategies = {
         'GOT_RW': 'Overwrite GOT Entry',
@@ -123,14 +174,22 @@ def interpret_results(results, win):
         tactics['common']['strategies'].append(strategies['leak'])
 
     print_results(tactics)
-
+    # TODO :: Allow for fmt str
+    if ('-a' in options):
+        fuzz_offsets()
 
 
 # TODO :: Fix awful prints with specifiers
-def analyze(target_bin, options=0):
+def analyze(target_bin, options=[]):
     print_banner()
+    global TARGET_BIN
+    
+    pad = ' ' * 12
+    adjusted_pad = ' ' * 8
 
     elf = ELF(target_bin, checksec=False)
+    TARGET_BIN = target_bin
+
     # TODO :: mutate win
     try:
         win_function = elf.symbols['win']
@@ -138,41 +197,54 @@ def analyze(target_bin, options=0):
         win_function = None
     
     print(f'''
-        [>>] Analysing {target_bin} 
+        [>>] Analysing {TARGET_BIN} 
     ''')
 
-    checksec_res = subprocess.run([CHECK_SEC, target_bin], capture_output=True, text=True)
+    checksec_res = subprocess.run([CHECK_SEC, TARGET_BIN], capture_output=True, text=True)
     results = checksec_res.stderr.split('\n')
 
     for protection in range(1, 6):
-        print(f'        {results[protection]}',end=None)
+        print(f'{adjusted_pad}{results[protection]}',end=None)
 
     if (win_function is not None):
-        print(f'\n            Likely win function @ {hex(win_function)}')
+        print(f'\n{pad}Likely win function @ {hex(win_function)}')
+
+    # run ropper cause inbuilt is ordinary  
+    ropper_res = subprocess.run([ROPPER, '-f', TARGET_BIN], capture_output=True, text=True)
+    num_gadgets = int(ropper_res.stdout[-20:-15])
+    
+    print(f'\n{pad}Binary has {num_gadgets} unique gadgets')
+
+
 
 
     print('\n       [>>] Determining possible strategies\n')
 
     # TODO :: Add more metrics
-    interpret_results(results, win_function is not None)
+    interpret_results(results, win_function is not None, options)
+
+
+
     print('\n')
 
 
 if __name__ == '__main__':
     
-    if (len(sys.argv) < 2 or (len(sys.argv) > 2)):
+    # TODO :: Convert to use argparser 
+    if (len(sys.argv) < 2 or (len(sys.argv) > 3)):
         print_banner()
 
         print(f'''
 
             usage :: {sys.argv[0]} <file> [options]
 
-            :::::::::::::::::: [options] ::::::::::::::::::
+            ::::::::::::::::::::::::: [options] :::::::::::::::::::::::::
 
-            -l, --lol       there are no options yet
-
+            -gt, --gadget-threshold     threshold for number of gadgets
+                                        to use for ROP weights 
+            -a,  --auto                 automatically fuzz for offsets
         ''')
         exit(0)
-    
-    analyze(sys.argv[1])
+    if (len(sys.argv) == 3): analyze(sys.argv[1], sys.argv[2])
+    else: analyze(sys.argv[1])
 
