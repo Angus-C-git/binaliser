@@ -8,6 +8,7 @@ import os
 from operator import getitem
 from collections import OrderedDict
 from pwnlib import timeout
+import argparse
 
 from pwnlib.asm import _objdump
 
@@ -15,7 +16,9 @@ import pprint
 
 from pwnlib.rop import gadgets
 from pwnlib.util.iters import pad
+from colorama import Fore, Style
 pp = pprint.PrettyPrinter(indent=4)
+
 
 CHECK_SEC = 'checksec'
 ROPPER = 'ropper'
@@ -25,6 +28,16 @@ RELRO   = "Full RELRO"
 CANARY  = "Canary found"
 NX      = "NX enabled"
 PIE     = "PIE enabled"
+
+
+WIN_VARIANTS = [
+    'win',
+	'winner',
+ 	'secret',
+  	'shell',
+	'jump_to_me',
+	'hidden'
+]
 
 
 TARGET_BIN = None
@@ -41,35 +54,55 @@ logging.disable()
 
 def print_banner():
 
-    print('''
+    print(Fore.GREEN + '''
           ____  ____ ___ _   _    _    _     ___ ____  _____ ____   ____  
          / / / | __ )_ _| \ | |  / \  | |   |_ _/ ___|| ____|  _ \  \ \ \ 
         / / /  |  _ \| ||  \| | / _ \ | |    | |\___ \|  _| | |_) |  \ \ \   
         \ \ \  | |_) | || |\  |/ ___ \| |___ | | ___) | |___|  _ <   / / /
          \_\_\ |____/___|_| \_/_/   \_\_____|___|____/|_____|_| \_\ /_/_/ 
     ''')
+    print(Style.RESET_ALL)
+
+
+def print_help():
+    
+    # print_banner()
+    print(f'''
+
+        usage :: {sys.argv[0]} <binary> [options]
+
+        ::::::::::::::::::::::::: [options] :::::::::::::::::::::::::
+
+        -h,  --help                 Displays this help menu
+        -a,  --auto                 Automatically fuzz for offsets
+        -gt, --gadget-threshold     Threshold for number of gadgets
+                                    to use for ROP weights 
+    ''')
+
+
 
 def print_results(tactics):
-    pad_base = ' ' * 12
-    pad_inner = ' ' * 14
-    pad_inner_inner = ' ' * 18
-
-    tactics = OrderedDict(sorted(tactics.items(), 
-                    key = lambda x: getitem(x[1], 'weight'), reverse=True))
+    tactics = OrderedDict(
+        sorted(
+            tactics.items(), 
+            key = lambda x: getitem(x[1], 'weight'), 
+            reverse=True
+        )
+    )
 
     # print common
-    print(f"{pad_base}[*] General Tactics\n")
+    print(f"{'':12}[*] General Tactics\n")
     for strategy in tactics['common']['strategies']:
-        print(f"{pad_inner} ‣ {strategy}")
+        print(f"{'':18} ‣ {strategy}")
 
     # tactics by weight
-    print(f"\n{pad_base}[*] Tactics By Weight\n")
+    print(f"\n{'':12}[*] Tactics By Weight\n")
     rank = 1
     for tactic in tactics:
         if tactic == 'common': continue
-        print(f'\n{pad_inner} [{rank}] :: [{tactic}]\n')
+        print(f"\n{'':14} [{rank}] :: [{tactic}]\n")
         for strategy in tactics[tactic]['strategies']:
-            print(f"{pad_inner_inner} ‣ {strategy}")
+            print(f"{'':18} ‣ {strategy}")
         rank += 1
 
 
@@ -91,19 +124,16 @@ def fuzz_fmtstr(test_payload):
 
 
 def fuzz_offsets(fmtstr_mode=0):
-    pad_base = ' ' * 12
-    
-    print(f'''
+    print(f'''{Fore.LIGHTGREEN_EX}
         [>>] Fuzzing for offsets
-    ''')
+    {Style.RESET_ALL}''')
 
+ 
     # :: Try to find offsets for both bof and fmt ::
-
-    # if (fmtstr_mode):
     try:
         fmtstr_fuzz = FmtStr(execute_fmt=fuzz_fmtstr)
         offset = fmtstr_fuzz.offset
-        print(f'{pad_base}Found possible offset for format str @ {hex(offset)}')
+        print(f"{'':12}Found possible offset for format str @ {Fore.GREEN}{hex(offset)}{Style.RESET_ALL}")
     except Exception as e:
         print('''
             Automatically detecting the offset for a format str 
@@ -112,7 +142,7 @@ def fuzz_offsets(fmtstr_mode=0):
 
             Note : This is expected if a return pointer offset was found.
         ''')
-        print(f"{pad_base}ERR :: {e}")
+        print(f"{Fore.LIGHTRED_EX}{'':12}ERR :: {e}{Style.RESET_ALL}")
     
     offset_test = cyclic(1000)
     try:
@@ -123,10 +153,10 @@ def fuzz_offsets(fmtstr_mode=0):
 
         core = Coredump('./core')
         offset = cyclic_find(core.eip)
-        print(f'{pad_base}Found possible return pointer offset @ {hex(offset)}')
+        print(f"{'':12}Found possible return pointer offset @ {Fore.GREEN}{hex(offset)}{Style.RESET_ALL}")
         
         # cleanup
-        # os.remove('./core')
+        os.remove('./core')
         proc.close()
     except Exception as e:
         print('''
@@ -136,7 +166,7 @@ def fuzz_offsets(fmtstr_mode=0):
 
             Note : This is expected if a format string offset was found.
         ''')
-        print(f"{pad_base}ERR :: {e}, was the core dumped?")
+        print(f"{Fore.LIGHTRED_EX}{'':12}ERR :: {e}, was the core dumped?{Style.RESET_ALL}")
 
 
 
@@ -149,10 +179,19 @@ def interpret_results(results, win, options):
         'shellcode': 'Attempt to execute shellcode in a stack buffer',
         'leak': 'Attempt to obtain a region leak such as an address on the stack',
         'win' : 'Attempt return to win function',
-        'return_ptr': 'Linear overwrite of return pointer'
+        'return_ptr': 'Linear overwrite of return pointer',
+        'heap_overflow': 'Attempt to overflow chunks on the heap',
+        'double_free': 'Attempt to leak heap data',
+        'UAF': 'Attempt to writes to arbitrary memory',
+        'function_hooks': 'Attempt to overwrite function hook',
+        'struct_ptr': 'Attempt to switch out struct pointer for win'
     }
 
     tactics = {
+        'heap': {
+			'weight': 0,
+			'strategies': []
+        },
         'rop': {
             'weight': 0,
             'strategies': []
@@ -185,14 +224,18 @@ def interpret_results(results, win, options):
         tactics['bof']['weight'] += 1
         tactics['bof']['strategies'].append(strategies['shellcode'])
     if (PIE not in results[5]):
-        pass
+        tactics['rop']['weight'] += 1
+        tactics['heap']['weight'] += 1
     
-
     # Memory protections enabled
     if (RELRO in results[2]):
         tactics['fmt_str']['weight'] -= 1
+        tactics['common']['strategies'].append(strategies['function_hooks'])
     if (CANARY in results[3]):
         tactics['bof']['strategies'].append(strategies['canary'])
+        tactics['heap']['weight'] += 1
+        if (win):
+            tactics['heap']['strategies'].append(strategies['struct_ptr'])
     if (NX in results[4]):
         if (win):
             tactics['bof']['weight'] += 1
@@ -204,79 +247,83 @@ def interpret_results(results, win, options):
 
     if (PIE in results[5]):
         tactics['common']['strategies'].append(strategies['leak'])
+        tactics['heap']['strategies'].append(strategies['double_free'])
 
     print_results(tactics)
-    # TODO :: Allow for fmt str
-    if ('-a' in options):
+    if (options.auto):
         fuzz_offsets()
 
 
-# TODO :: Fix awful prints with specifiers
-def analyze(target_bin, options=[]):
-    print_banner()
+def analyze(target_bin, options):
+    # print_banner()
     global TARGET_BIN
-    
-    pad = ' ' * 12
-    adjusted_pad = ' ' * 8
 
     elf = ELF(target_bin, checksec=False)
     TARGET_BIN = target_bin
 
-    # TODO :: mutate win
-    try:
-        win_function = elf.symbols['win']
-    except:
-        win_function = None
+    for variant in WIN_VARIANTS:
+        try:
+            win_function = elf.symbols[variant]
+            break
+        except:
+            win_function = None
+        
     
-    print(f'''
+    print(f'''{Fore.LIGHTGREEN_EX}
         [>>] Analysing {TARGET_BIN} 
-    ''')
+     {Style.RESET_ALL}''')
 
     checksec_res = subprocess.run([CHECK_SEC, TARGET_BIN], capture_output=True, text=True)
     results = checksec_res.stderr.split('\n')
 
     for protection in range(1, 6):
-        print(f'{adjusted_pad}{results[protection]}',end=None)
+        print(f"{'':8}{results[protection]}", end=None)
 
     if (win_function is not None):
-        print(f'\n{pad}Likely win function @ {hex(win_function)}')
+        print(f"\n{'':12}Likely win function @ {Fore.GREEN}{hex(win_function)}{Style.RESET_ALL}")
 
     # run ropper cause inbuilt is ordinary  
     ropper_res = subprocess.run([ROPPER, '-f', TARGET_BIN], capture_output=True, text=True)
     num_gadgets = int(ropper_res.stdout[-20:-15])
     
-    print(f'\n{pad}Binary has {num_gadgets} unique gadgets')
-
-
-
-
-    print('\n       [>>] Determining possible strategies\n')
+    print(f"\n{'':12}Binary has {Fore.GREEN}{num_gadgets}{Style.RESET_ALL} unique gadgets")
+    print(f"\n{'':8}{Fore.LIGHTGREEN_EX}[>>] Determining possible strategies\n{Style.RESET_ALL}")
 
     # TODO :: Add more metrics
     interpret_results(results, win_function is not None, options)
-
-
-
     print('\n')
+
 
 
 if __name__ == '__main__':
     
-    # TODO :: Convert to use argparser 
-    if (len(sys.argv) < 2 or (len(sys.argv) > 3)):
-        print_banner()
+    parser = argparse.ArgumentParser(
+        description=print_banner(), 
+        epilog='Goodluck friend',
+        add_help=True
+    )
 
-        print(f'''
+    if (len(sys.argv) == 1): print_help()
 
-            usage :: {sys.argv[0]} <file> [options]
+    parser.add_argument(
+        'binary',
+        metavar = '<binary>',
+        help    = 'Binary program to analyse' 
+    )
 
-            ::::::::::::::::::::::::: [options] :::::::::::::::::::::::::
+    parser.add_argument(
+        '-a', '--auto',
+        action='store_true',
+        dest='auto',
+        help='Automatically fuzz for offsets'
+    )
 
-            -gt, --gadget-threshold     threshold for number of gadgets
-                                        to use for ROP weights 
-            -a,  --auto                 automatically fuzz for offsets
-        ''')
-        exit(0)
-    if (len(sys.argv) == 3): analyze(sys.argv[1], sys.argv[2])
-    else: analyze(sys.argv[1])
+    parser.add_argument(
+        '-gt', '--gadget-threshold',
+        action='store_true',
+        dest='gadget_threshold',
+        help='Threshold for number of gadgets to use for ROP weights'
+    )
 
+    args = parser.parse_args()
+    analyze(args.binary, args)
