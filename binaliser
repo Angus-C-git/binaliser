@@ -30,13 +30,23 @@ NX      = "NX enabled"
 PIE     = "PIE enabled"
 
 
+# potential win function 
+# strings to hunt for
 WIN_VARIANTS = [
     'win',
 	'winner',
  	'secret',
-  	'shell',
 	'jump_to_me',
-	'hidden'
+	'hidden',
+    'pwnme',
+    'pwn',
+    'hackme',
+    'hack_me',
+    'winnerwinnerchickendinner',
+    'chicken_dinner',
+    'shell',
+    'useful',
+    'ret2win'
 ]
 
 
@@ -47,26 +57,25 @@ TARGET_BIN = None
 RCV_BEFORE = 25
 
 # UI
-
 PAD_BASE = ' ' * 12
 logging.disable()
 
 
 def print_banner():
+    """ print program banner """
 
     print(Fore.GREEN + '''
-          ____  ____ ___ _   _    _    _     ___ ____  _____ ____   ____  
-         / / / | __ )_ _| \ | |  / \  | |   |_ _/ ___|| ____|  _ \  \ \ \ 
-        / / /  |  _ \| ||  \| | / _ \ | |    | |\___ \|  _| | |_) |  \ \ \   
-        \ \ \  | |_) | || |\  |/ ___ \| |___ | | ___) | |___|  _ <   / / /
-         \_\_\ |____/___|_| \_/_/   \_\_____|___|____/|_____|_| \_\ /_/_/ 
-    ''')
-    print(Style.RESET_ALL)
+  ____  ____ ___ _   _    _    _     ___ ____  _____ ____   ____  
+ / / / | __ )_ _| \ | |  / \  | |   |_ _/ ___|| ____|  _ \  \ \ \ 
+/ / /  |  _ \| ||  \| | / _ \ | |    | |\___ \|  _| | |_) |  \ \ \   
+\ \ \  | |_) | || |\  |/ ___ \| |___ | | ___) | |___|  _ <   / / /
+ \_\_\ |____/___|_| \_/_/   \_\_____|___|____/|_____|_| \_\ /_/_/ 
+    
+    ''' + Style.RESET_ALL)
 
 
 def print_help():
-    
-    # print_banner()
+    """ print help """ 
     print(f'''
 
         usage :: {sys.argv[0]} <binary> [options]
@@ -82,6 +91,7 @@ def print_help():
 
 
 def print_results(tactics):
+    """ print results from analysis """
     tactics = OrderedDict(
         sorted(
             tactics.items(), 
@@ -106,13 +116,69 @@ def print_results(tactics):
         rank += 1
 
 
-def fuzz_fmtstr(test_payload):
+def get_buffer_path(sequence_file=None):
+    """ attempt to get a path to the input to fuzz """ 
+    if sequence_file is None:
+        buffer_path = str(input("""
+            Enter 'send, receive' sequence to reach buffer seperated by > characters and & to
+            mark the target buffer, use * to recvall.
+            
+            For example:
+
+            password,12345isthepassword>name: ,johnsmith>task: , &> list, *
+
+            >> """
+        )).strip('\n').split(">")
+        print(buffer_path)
+        return buffer_path
+    
+    with open(sequence_file, 'r') as f:
+        buffer_path = f.read().split("\n")
+        print(buffer_path)
+        return buffer_path
+
+
+
+def intelligent_fmtstr_fuzz(test_payload):
+    """ 
+    attempt to fuzz an indirect field for 
+    offsets (W.I.P) 
+    """
+    proc = process(TARGET_BIN)
+    
+    global buffer_path
+
     try:
-        proc = process(TARGET_BIN)
+        for recv_send in buffer_path:
+            print("send rec block :::", buffer_path)
+            recv, send = recv_send.split(',')
+            print("recv", recv, "send", send)
+            if '&' not in send:
+                proc.sendlineafter(recv, send)
+            else:
+                proc.sendlineafter(recv, test_payload)
+            # if '*' in recv:
+                
+                
+
+    except Exception as e:
+        print('''
+            Automatically detecting the offset failed
+            likely because the input point to the binary
+            is not simplistic or vulnerable.
+        ''')
+        print(f"{PAD_BASE}ERR :: {e}")      
+
+
+
+def fuzz_fmtstr(test_payload):
+    """ test fmtstring case """
+    proc = process(TARGET_BIN)
+    try:
         # Attempt to catch a simple prompt
         proc.recvlines(RCV_BEFORE, timeout=1.5)
         proc.sendline(test_payload)
-        return proc.recvall()
+        return proc.recvall(timeout=1.5)
 
     except Exception as e:
         print('''
@@ -123,27 +189,33 @@ def fuzz_fmtstr(test_payload):
         print(f"{PAD_BASE}ERR :: {e}")
 
 
-def fuzz_offsets(fmtstr_mode=0):
+def fuzz_offsets(path_mode=False):
+    """ perform simple format string offset fuzz """
     print(f'''{Fore.LIGHTGREEN_EX}
         [>>] Fuzzing for offsets
     {Style.RESET_ALL}''')
 
- 
-    # :: Try to find offsets for both bof and fmt ::
-    try:
-        fmtstr_fuzz = FmtStr(execute_fmt=fuzz_fmtstr)
-        offset = fmtstr_fuzz.offset
-        print(f"{'':12}Found possible offset for format str @ {Fore.GREEN}{hex(offset)}{Style.RESET_ALL}")
-    except Exception as e:
-        print('''
-            Automatically detecting the offset for a format str 
-            failed likely because the input point to the binary
-            is not simplistic or vulnerable ...
+    # :: Try to find offsets for both bof and fmt :: #
+    if path_mode:
+        global buffer_path
+        buffer_path = get_buffer_path()
+        fmtstr_fuzz = FmtStr(execute_fmt=intelligent_fmtstr_fuzz)
+    else:
+        try:
+            fmtstr_fuzz = FmtStr(execute_fmt=fuzz_fmtstr)
+            offset = fmtstr_fuzz.offset
+            print(f"{'':12}Found possible offset for format str @ {Fore.GREEN}{hex(offset)}{Style.RESET_ALL}")
+        except Exception as e:
+            print('''
+                Automatically detecting the offset for a format str 
+                failed likely because the input point to the binary
+                is not simplistic or vulnerable ...
 
-            Note : This is expected if a return pointer offset was found.
-        ''')
-        print(f"{Fore.LIGHTRED_EX}{'':12}ERR :: {e}{Style.RESET_ALL}")
-    
+                Note : This is expected if a return pointer offset was found.
+            ''')
+            print(f"{Fore.LIGHTRED_EX}{'':12}ERR :: {e}{Style.RESET_ALL}")
+
+
     offset_test = cyclic(1000)
     try:
         proc = process(TARGET_BIN)
@@ -251,7 +323,9 @@ def interpret_results(results, win, options):
 
     print_results(tactics)
     if (options.auto):
-        fuzz_offsets()
+        if (options.buff_path):
+            fuzz_offsets(path_mode=True)
+        else: fuzz_offsets()
 
 
 def analyze(target_bin, options):
@@ -299,7 +373,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(
         description=print_banner(), 
-        epilog='Goodluck friend',
+        epilog='Happy hacking!',
         add_help=True
     )
 
@@ -316,6 +390,13 @@ if __name__ == '__main__':
         action='store_true',
         dest='auto',
         help='Automatically fuzz for offsets'
+    )
+
+    parser.add_argument(
+        '-bp', '--buffer-path',
+        action='store_true',
+        dest='buff_path',
+        help='Sequence to reach buffer to automatically fuzz'
     )
 
     parser.add_argument(
